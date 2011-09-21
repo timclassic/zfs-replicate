@@ -309,7 +309,11 @@ DRY RUN - Replication commands will not be run
         sys.stdout.flush()
 
 
-def killed():
+def sig_handler(sig, frame):
+    # Ignore the signal we're about to send out to our process group,
+    # since it will come back to us
+    signal.signal(sig, signal.SIG_IGN)
+    os.killpg(os.getpgid(0), sig)
     sys.stderr.write('''
 Replication aborted.  Snapshots that have already transferred will
 remain on the destination host; only the in-progress snapshot will
@@ -318,14 +322,6 @@ where you left off.
 ''')
     sys.stderr.flush()
     sys.exit(1)
-
-
-def sig_handler(sig, frame):
-    # Ignore the signal we're about to send out to our process group,
-    # since it will come back to us
-    signal.signal(sig, signal.SIG_IGN)
-    os.killpg(os.getpgid(0), sig)
-    killed()
 
 
 if __name__ == "__main__":
