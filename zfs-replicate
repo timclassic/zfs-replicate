@@ -17,8 +17,9 @@ class LockfileExists(Exception): pass
 
 
 class Zfs(object):
-    """This class represents the overall ZFS system.  It can be used
-    to get a list of all ZFS pools on the system."""
+    """This class represents the overall ZFS system.
+
+    It can be used to get a list of all ZFS pools on the system."""
 
     @classmethod
     def _datasets(cls, dset_type, filter, cmd_prefix="", cmd_postfix=""):
@@ -75,8 +76,10 @@ class Zfs(object):
 
 
 class Zpool(object):
-    """Represents an individual ZFS pool.  Can be used to perform
-    pool-wide operations and to get a list of datasets within a pool."""
+    """Represents an individual ZFS pool.
+
+    Can be used to perform pool-wide operations and to get a list of
+    datasets within a pool."""
 
     def __init__(self, name):
         self._name = name
@@ -104,15 +107,18 @@ class Zpool(object):
 
 
 class Dataset(object):
-    """Represents a dataset within a ZFS pool.  It could be a
-    filesystem, a volume, or a snapshot.  Allows access to properties
-    of the dataset."""
+    """Represents a dataset within a ZFS pool.
+
+    It could be a filesystem, a volume, or a snapshot.  Allows access
+    to properties of the dataset."""
 
     def __init__(self, name, cmd_prefix="", **attrs):
-        """Initialize a new Dataset.  If we are provided only a name
-        then fill in the attributes ourselves.  Otherwise, fill with
-        the values provided.  Only the ZFS classes should use **attrs
-        directly in this constructor."""
+        """Initialize a new Dataset.
+
+        If we are provided only a name then fill in the attributes
+        ourselves.  Otherwise, fill with the values provided.  Only
+        the ZFS classes should use **attrs directly in this
+        constructor."""
         self._name = name
         self._cmd_prefix = cmd_prefix
         self._attrs = attrs
@@ -166,9 +172,11 @@ def split_dest(dest):
 
 def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
               dryrun=False):
-    """Perform actual replication to dst_host into dst_fs.  If
-    begin_snap is None, perform a full replication, otherwise, perform
-    an incremental send/receive between begin_snap and end_snap."""
+    """Perform replication to dst_host into dst_fs.
+
+    If begin_snap is None, perform a full replication, otherwise,
+    perform an incremental send/receive between begin_snap and
+    end_snap."""
 
     repl_args = ''
     extra_args = ''
