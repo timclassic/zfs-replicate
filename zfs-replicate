@@ -291,7 +291,6 @@ def main():
     begin_snap = None
     rem_text = remfs
     repl_text = 'Full replication, no snapshots on remote host'
-    repl_args = ''
     if remfs_dset and len(remfs_dset.snapshots) > 0:
         rem_snaps = sorted(remfs_dset.snapshots,
                            key=lambda snap: snap.attrs['create'])
