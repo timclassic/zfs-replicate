@@ -1,0 +1,336 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import shlex
+import subprocess
+import signal
+import re
+from datetime import datetime
+
+
+class NonZeroExitStatus(Exception): pass
+class InvalidDestinationError(Exception): pass
+class NoSuchDatasetError(Exception): pass
+
+
+class Zfs(object):
+    """This class represents the overall ZFS system.  It can be used
+    to get a list of all ZFS pools on the system."""
+
+    @classmethod
+    def _datasets(cls, dset_type, filter, cmd_prefix="", cmd_postfix=""):
+        """Internal implementation of dataset selection code."""
+        cmd = '%s zfs list -t %s -r -Ho name,creation %s' % (
+            cmd_prefix, dset_type, cmd_postfix)
+        stdout, stderr = cls._run_cmd(cmd)
+        lines = stdout.split('\n')
+        results = []
+        filter_re = re.compile(filter)
+        for line in lines:
+            if line.strip() == "":
+                continue
+            cols = line.split('\t')
+            name = cols[0]
+            cdate = datetime.strptime(cols[1], '%a %b %d %H:%M %Y')
+
+            if filter_re.match(name):
+                results.append(Dataset(name, create=cdate))
+        return results
+
+    @classmethod
+    def _run_cmd(cls, args):
+        args_list = shlex.split(args)
+        p = subprocess.Popen(args_list, stdin=None,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = p.communicate()
+        if p.returncode != 0:
+            raise NonZeroExitStatus(stderr.strip())
+        return (stdout, stderr)
+
+    def pools(self):
+        """Return a list of ZFS pools."""
+        stdout, stderr = Zfs._run_cmd('zpool list -Ho name')
+        stdout_lines = stdout.strip().split('\n')
+        def f(x): return Zpool(x)
+        return map(f, stdout_lines)
+
+    def datasets(self, filter=".*", cmd_prefix=""):
+        """Return a list of datasets in all pools."""
+        return Zfs._datasets('all', filter, cmd_prefix)
+
+    def filesystems(self, filter=".*", cmd_prefix=""):
+        """Return a list of all datasets that are filesystems in all pools."""
+        return Zfs._datasets('filesystem', filter, cmd_prefix)
+
+    def snapshots(self, filter=".*", cmd_prefix=""):
+        """Return a list of all datasets that are snapshots in all pools."""
+        return Zfs._datasets('snapshot', filter, cmd_prefix)
+
+    def volumes(self, filter=".*", cmd_prefix=""):
+        """Return a list of all datasets that are volumes in all pools."""
+        return Zfs._datasets('all', filter, cmd_prefix)
+
+
+class Zpool(object):
+    """Represents an individual ZFS pool.  Can be used to perform
+    pool-wide operations and to get a list of datasets within a pool."""
+
+    def __init__(self, name):
+        self._name = name
+
+    @property
+    def name(self):
+        """The ZFS pool's name"""
+        return self._name
+
+    def datasets(self, filter=".*", cmd_prefix=""):
+        """Return a list of datasets in all pools."""
+        return Zfs._datasets('all', filter, cmd_prefix, self.name)
+
+    def filesystems(self, filter=".*", cmd_prefix=""):
+        """Return a list of all datasets that are filesystems in all pools."""
+        return Zfs._datasets('filesystem', filter, cmd_prefix, self.name)
+
+    def snapshots(self, filter=".*", cmd_prefix=""):
+        """Return a list of all datasets that are snapshots in all pools."""
+        return Zfs._datasets('snapshot', filter, cmd_prefix, self.name)
+
+    def volumes(self, filter=".*", cmd_prefix=""):
+        """Return a list of all datasets that are volumes in all pools."""
+        return Zfs._datasets('all', filter, cmd_prefix, self.name)
+
+
+class Dataset(object):
+    """Represents a dataset within a ZFS pool.  It could be a
+    filesystem, a volume, or a snapshot.  Allows access to properties
+    of the dataset."""
+
+    def __init__(self, name, cmd_prefix="", **attrs):
+        """Initialize a new Dataset.  If we are provided only a name
+        then fill in the attributes ourselves.  Otherwise, fill with
+        the values provided.  Only the ZFS classes should use **attrs
+        directly in this constructor."""
+        self._name = name
+        self._cmd_prefix = cmd_prefix
+        self._attrs = attrs
+        if attrs == {}:
+            dsets = Zfs._datasets('all', '^%s$' % (name), cmd_prefix)
+            if len(dsets) < 1:
+                raise NoSuchDatasetError
+            assert(len(dsets) == 1)
+
+    @property
+    def name(self):
+        """The dataset's name."""
+        return self._name
+
+    @property
+    def attrs(self):
+        """Dictionary of dataset attributes."""
+        return self._attrs
+
+    @property
+    def snapshots(self):
+        """A list of snapshots based on this dataset."""
+        return Zfs._datasets('snapshot', '%s@.*'
+                             % (self.name), self._cmd_prefix)
+
+
+def split_dest(dest):
+    m = re.match('^([^:]+):([^:]+)$', dest)
+    if not m:
+        raise InvalidDestinationError()
+    return (m.group(1), m.group(2))
+
+
+def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
+              dryrun=False):
+    """Perform actual replication to dst_host into dst_fs.  If
+    begin_snap is None, perform a full replication, otherwise, perform
+    an incremental send/receive between begin_snap and end_snap."""
+
+    repl_args = ''
+    extra_args = ''
+    if verbose:
+        extra_args = extra_args + '-v'
+    if begin_snap:
+        repl_args = '-I @%s' % (begin_snap.name.split('@')[1])
+    cmd = 'zfs send %s %s | ssh %s zfs receive %s -F %s' \
+          % (repl_args, end_snap.name, dst_host, extra_args, dst_fs)
+
+    if verbose:
+        if dryrun:
+            sys.stdout.write('[DRY RUN] Not running command: %s\n' % (cmd))
+        else:
+            sys.stdout.write('Running command: %s\n' % (cmd))
+        sys.stdout.flush()
+
+    if not dryrun:
+        p = subprocess.Popen(cmd, stdin=None, shell=True,
+                             stdout=sys.stdout, stderr=sys.stderr)
+        p.communicate()
+
+
+def main():
+    from optparse import OptionParser
+    usage = """Usage: %prog [-n] [-e snapshot] filesystem dest
+
+  Replicate filesystem to dest using zfs send and receive commands.
+  filesystem should be a ZFS dataset and dest should be of the form:
+
+    remote_host:filesystem
+
+  SSH will be used to connect to remote_host and receive the stream
+  into the given dataset."""
+    parser = OptionParser(usage=usage)
+    parser.add_option('-e', '--end', dest='end',
+                      help="use specified snapshot as the replication target, "
+                      "rather than choosing the newest snapshot available")
+    parser.add_option('-n', '--dryrun', dest='dryrun',
+                      action="store_true", default=False,
+                      help="show steps without running actual commands, "
+                      "implies --verbose")
+    parser.add_option('-s', '--summary', dest='summary',
+                      action="store_true", default=False,
+                      help="print replication summary, useful for testing "
+                      "with cron")
+    parser.add_option('-v', '--verbose', dest='verbose', action="store_true",
+                      default=False, help="be verbose about progress")
+    (options, args) = parser.parse_args()
+    if len(args) == 0:
+        parser.print_help()
+        sys.exit(0)
+    if len(args) != 2:
+        parser.error("Please supply filesystem and dest arguments")
+
+    if options.dryrun:
+        options.verbose = True
+    ## Zfs.echo_cmds = options.verbose
+    
+    fs = args[0]
+    try:
+        fs_dset = Dataset(fs)
+    except NoSuchDatasetError:
+        parser.error('No such dataset: %s' % (fs))
+
+    try:
+        remhost, remfs = split_dest(args[1])
+    except InvalidDestinationError:
+        parser.error("Invalid dest specification")
+
+    if len(fs_dset.snapshots) == 0:
+        parser.error('No snapshots for dataset: %s' % (fs))
+
+    # Validate source snapshot
+    if options.end:
+        try:
+            end_snap = Dataset('%s@%s' % (fs, options.end))
+        except NoSuchDatasetError:
+            parser.error('No such dataset: %s@%s' % (fs, options.end))
+        local_text = '(specified): '
+    else:
+        local_snaps = sorted(fs_dset.snapshots,
+                             key=lambda snap: snap.attrs['create'])
+        end_snap = local_snaps[-1]
+        staging_snap = local_snaps[0]
+        local_text = '(newest):    '
+
+    # Validate destination filesystem
+    remfs_dset = None
+    try:
+        remfs_dset = Dataset(remfs, 'ssh %s' % remhost)
+    except NoSuchDatasetError:
+        pass
+    except NonZeroExitStatus, e:
+        parser.error('Error running ZFS command: %s' % (e))
+    
+    # Ensure that newest remote snapshot (if any exist) is contained
+    # in local list
+    begin_snap = None
+    rem_text = remfs
+    repl_text = 'Full replication, no snapshots on remote host'
+    repl_args = ''
+    if remfs_dset and len(remfs_dset.snapshots) > 0:
+        rem_snaps = sorted(remfs_dset.snapshots,
+                           key=lambda snap: snap.attrs['create'])
+        begin_snap = rem_snaps[-1]
+        rem_text = begin_snap.name
+        repl_text = 'Incremental update since last replication'
+
+        matches = [snap for snap in fs_dset.snapshots
+                   if snap.name.split('@')[1] == begin_snap.name.split('@')[1]]
+        if len(matches) == 0:
+            parser.error('Newest remote snapshot does not exist locally')
+
+    # Are snapshots the same on both sides?
+    if begin_snap and \
+           end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+        if options.verbose:
+            sys.stdout.write('Remote snapshot is up-to-date, no work to do\n')
+            sys.stdout.flush()
+        sys.exit(0)
+
+    # Print out validated parameters
+    if options.verbose or options.summary:
+        sys.stdout.write('''
+Replication parameters validated
+Local snapshot %s %s
+Remote dataset, host:        %s on %s
+Replication type:            %s
+Remote starting dataset:     %s
+
+Starting replication...
+''' % (local_text, end_snap.name, remfs, remhost, repl_text, rem_text))
+        sys.stdout.flush()
+        
+    if options.dryrun:
+        sys.stdout.write('''
+==============================================
+DRY RUN - Replication commands will not be run
+==============================================
+''')
+        sys.stdout.flush()
+
+    if not begin_snap:
+        # Perform a staging replication if necessary.  This is only
+        # necessary when doing a full replication, since we don't get
+        # -I's behavior of sending all intermediate snapshots.  Here
+        # we "stage" to the first snapshot and then do a regular
+        # incremental outside of the if statement.
+        replicate(None, staging_snap, remhost, remfs,
+                  options.verbose or options.summary, options.dryrun)
+        begin_snap = staging_snap
+    replicate(begin_snap, end_snap, remhost, remfs,
+              options.verbose or options.summary, options.dryrun)
+
+    if options.verbose or options.summary:
+        sys.stdout.write('Replication complete\n')
+        sys.stdout.flush()
+
+
+def killed():
+    sys.stderr.write('''
+Replication aborted.  Snapshots that have already transferred will
+remain on the destination host; only the in-progress snapshot will
+have to be transferred again.  You should be able to restart later
+where you left off.
+''')
+    sys.stderr.flush()
+    sys.exit(1)
+
+
+def sig_handler(sig, frame):
+    # Ignore the signal we're about to send out to our process group,
+    # since it will come back to us
+    signal.signal(sig, signal.SIG_IGN)
+    os.killpg(os.getpgid(0), sig)
+    killed()
+
+
+if __name__ == "__main__":
+    # Set up signal handling
+    for sig in [signal.SIGINT, signal.SIGQUIT, signal.SIGTERM]:
+        signal.signal(sig, sig_handler)
+    
+    main()
