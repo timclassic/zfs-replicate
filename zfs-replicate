@@ -173,6 +173,16 @@ def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
 
 
 def main():
+    # Set up signal handling
+    try:
+        os.setpgid(0, 0)
+    except OSError:
+        # We shouldn't stop exeuction if we can't create our own
+        # process group
+        pass
+    for sig in [signal.SIGINT, signal.SIGQUIT, signal.SIGTERM]:
+        signal.signal(sig, sig_handler)
+
     from optparse import OptionParser
     usage = """Usage: %prog [-n] [-e snapshot] filesystem dest
 
@@ -325,8 +335,4 @@ where you left off.
 
 
 if __name__ == "__main__":
-    # Set up signal handling
-    for sig in [signal.SIGINT, signal.SIGQUIT, signal.SIGTERM]:
-        signal.signal(sig, sig_handler)
-    
     main()
