@@ -216,7 +216,6 @@ def main():
 
     if options.dryrun:
         options.verbose = True
-    ## Zfs.echo_cmds = options.verbose
     
     fs = args[0]
     try:
