@@ -7,11 +7,13 @@ import subprocess
 import signal
 import re
 from datetime import datetime
+from contextlib import contextmanager
 
 
 class NonZeroExitStatus(Exception): pass
 class InvalidDestinationError(Exception): pass
 class NoSuchDatasetError(Exception): pass
+class LockfileExists(Exception): pass
 
 
 class Zfs(object):
@@ -137,6 +139,24 @@ class Dataset(object):
                              % (self.name), self._cmd_prefix)
 
 
+@contextmanager
+def zfs_recv_lockfile(remhost, remfs):
+    """ Lock file is created based on the destination host and
+    dataset, to allow for concurrent replications when safe"""
+    lockfile = '/tmp/zfs-replicate-%s-%s.lock' \
+               % (remhost.split('.')[0], remfs.replace('/', '_'))
+    lockfile_fd = 0
+    try:
+        lockfile_fd = os.open(lockfile, os.O_EXCL|os.O_CREAT)
+        os.close(lockfile_fd)
+        yield
+    except OSError:
+        raise LockfileExists
+    finally:
+        if lockfile_fd:
+            os.unlink(lockfile)
+
+
 def split_dest(dest):
     m = re.match('^([^:]+):([^:]+)$', dest)
     if not m:
@@ -194,6 +214,10 @@ def main():
   SSH will be used to connect to remote_host and receive the stream
   into the given dataset."""
     parser = OptionParser(usage=usage)
+    parser.add_option('-c', '--cron', dest='cron',
+                      action="store_true", default=False,
+                      help="suppress errors that are normal when running "
+                      "via cron")
     parser.add_option('-e', '--end', dest='end',
                       help="use specified snapshot as the replication target, "
                       "rather than choosing the newest snapshot available")
@@ -301,21 +325,31 @@ DRY RUN - Replication commands will not be run
 ''')
         sys.stdout.flush()
 
-    if not begin_snap:
-        # Perform a staging replication if necessary.  This is only
-        # necessary when doing a full replication, since we don't get
-        # -I's behavior of sending all intermediate snapshots.  Here
-        # we "stage" to the first snapshot and then do a regular
-        # incremental outside of the if statement.
-        replicate(None, staging_snap, remhost, remfs,
-                  options.verbose or options.summary, options.dryrun)
-        begin_snap = staging_snap
-    replicate(begin_snap, end_snap, remhost, remfs,
-              options.verbose or options.summary, options.dryrun)
+    try:
+        with zfs_recv_lockfile(remhost, remfs):
+            if not begin_snap:
+                # Perform a staging replication if necessary.  This is
+                # only necessary when doing a full replication, since
+                # we don't get -I's behavior of sending all
+                # intermediate snapshots.  Here we "stage" to the
+                # first snapshot and then do a regular incremental
+                # outside of the if statement.
+                replicate(None, staging_snap, remhost, remfs,
+                          options.verbose or options.summary, options.dryrun)
+                begin_snap = staging_snap
+            replicate(begin_snap, end_snap, remhost, remfs,
+                      options.verbose or options.summary, options.dryrun)
 
-    if options.verbose or options.summary:
-        sys.stdout.write('Replication complete\n')
-        sys.stdout.flush()
+            if options.verbose or options.summary:
+                sys.stdout.write('Replication complete\n')
+                sys.stdout.flush()
+
+    except LockfileExists:
+        if not options.cron:
+            sys.stderr.write("Lock file exists, receive already in progress\n")
+            sys.stderr.flush()
+            sys.exit(0)
+        sys.exit(1)
 
 
 def sig_handler(sig, frame):
