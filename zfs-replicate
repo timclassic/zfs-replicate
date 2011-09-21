@@ -166,8 +166,8 @@ def zfs_recv_lockfile(remhost, remfs):
 def split_dest(dest):
     m = re.match('^([^:]+):([^:]+)$', dest)
     if not m:
-        raise InvalidDestinationError()
-    return (m.group(1), m.group(2))
+        raise InvalidDestinationError
+    return m.group(1), m.group(2)
 
 
 def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
@@ -239,7 +239,7 @@ def main():
                       "with cron")
     parser.add_option('-v', '--verbose', dest='verbose', action="store_true",
                       default=False, help="be verbose about progress")
-    (options, args) = parser.parse_args()
+    options, args = parser.parse_args()
     if not args:
         parser.print_help()
         sys.exit(0)
