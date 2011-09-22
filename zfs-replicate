@@ -285,7 +285,14 @@ def main():
     try:
         remfs_dset = Dataset(remfs, 'ssh %s' % remhost)
     except NoSuchDatasetError:
-        pass
+        try:
+            rslash = remfs.rfind('/')
+            if rslash < 0:
+                raise NoSuchDatasetError
+            Dataset(remfs[:rslash], 'ssh %s' % remhost)
+        except NoSuchDatasetError:
+            parser.error('Remote dataset or parent does not exist: %s'
+                         % remfs)
     except NonZeroExitStatus, e:
         parser.error('Error running ZFS command: %s' % (e))
     
