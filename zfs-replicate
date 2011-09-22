@@ -27,7 +27,7 @@ class Zfs(object):
         cmd = '%s zfs list -t %s -r -Ho name,creation %s' % (
             cmd_prefix, dset_type, cmd_postfix)
         stdout, stderr = cls._run_cmd(cmd)
-        lines = stdout.split('\n')
+        lines = stdout.strip().splitlines()
         results = []
         filter_re = re.compile(filter)
         for line in lines:
@@ -54,7 +54,7 @@ class Zfs(object):
     def pools(self):
         """Return a list of ZFS pools."""
         stdout, stderr = Zfs._run_cmd('zpool list -Ho name')
-        stdout_lines = stdout.strip().split('\n')
+        stdout_lines = stdout.strip().splitlines()
         def f(x): return Zpool(x)
         return map(f, stdout_lines)
 
