@@ -76,7 +76,7 @@ class Zfs(object):
     @classmethod
     def volumes(cls, filter=".*", cmd_prefix=""):
         """Return a list of all datasets that are volumes in all pools."""
-        return cls._datasets('all', filter, cmd_prefix)
+        return cls._datasets('volume', filter, cmd_prefix)
 
 
 class Zpool(object):
