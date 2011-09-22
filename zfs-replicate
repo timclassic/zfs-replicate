@@ -19,7 +19,8 @@ class LockfileExists(Exception): pass
 class Zfs(object):
     """This class represents the overall ZFS system.
 
-    It can be used to get a list of all ZFS pools on the system."""
+    It can be used to get a list of all ZFS pools and datasets on the
+    system."""
 
     @classmethod
     def _datasets(cls, dset_type, filter, cmd_prefix="", cmd_postfix=""):
@@ -49,28 +50,33 @@ class Zfs(object):
             raise NonZeroExitStatus(stderr.strip())
         return (stdout, stderr)
 
-    def pools(self):
+    @classmethod
+    def pools(cls):
         """Return a list of ZFS pools."""
-        stdout, stderr = Zfs._run_cmd('zpool list -Ho name')
+        stdout, stderr = cls._run_cmd('zpool list -Ho name')
         stdout_lines = stdout.strip().splitlines()
         def f(x): return Zpool(x)
         return map(f, stdout_lines)
 
-    def datasets(self, filter=".*", cmd_prefix=""):
+    @classmethod
+    def datasets(cls, filter=".*", cmd_prefix=""):
         """Return a list of datasets in all pools."""
-        return Zfs._datasets('all', filter, cmd_prefix)
+        return cls._datasets('all', filter, cmd_prefix)
 
-    def filesystems(self, filter=".*", cmd_prefix=""):
+    @classmethod
+    def filesystems(cls, filter=".*", cmd_prefix=""):
         """Return a list of all datasets that are filesystems in all pools."""
-        return Zfs._datasets('filesystem', filter, cmd_prefix)
+        return cls._datasets('filesystem', filter, cmd_prefix)
 
-    def snapshots(self, filter=".*", cmd_prefix=""):
+    @classmethod
+    def snapshots(cls, filter=".*", cmd_prefix=""):
         """Return a list of all datasets that are snapshots in all pools."""
-        return Zfs._datasets('snapshot', filter, cmd_prefix)
+        return cls._datasets('snapshot', filter, cmd_prefix)
 
-    def volumes(self, filter=".*", cmd_prefix=""):
+    @classmethod
+    def volumes(cls, filter=".*", cmd_prefix=""):
         """Return a list of all datasets that are volumes in all pools."""
-        return Zfs._datasets('all', filter, cmd_prefix)
+        return cls._datasets('all', filter, cmd_prefix)
 
 
 class Zpool(object):
