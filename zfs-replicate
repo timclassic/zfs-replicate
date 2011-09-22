@@ -181,14 +181,15 @@ def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
     perform an incremental send/receive between begin_snap and
     end_snap."""
 
-    repl_args = ''
-    extra_args = ''
+    send_args = ''
+    recv_args = ''
     if verbose:
-        extra_args = extra_args + '-v'
+        send_args = send_args + ' -v'
+        recv_args = recv_args + ' -v'
     if begin_snap:
-        repl_args = '-I @%s' % (begin_snap.name.split('@')[1])
-    cmd = 'zfs send %s %s | ssh %s zfs receive %s -F %s' \
-          % (repl_args, end_snap.name, dst_host, extra_args, dst_fs)
+        send_args = send_args + ' -I @%s' % (begin_snap.name.split('@')[1])
+    cmd = 'zfs send%s %s | ssh %s zfs receive%s -F %s' \
+          % (send_args, end_snap.name, dst_host, recv_args, dst_fs)
 
     if verbose:
         if dryrun:
