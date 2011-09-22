@@ -216,7 +216,7 @@ def main():
         signal.signal(sig, sig_handler)
 
     from optparse import OptionParser
-    usage = """Usage: %prog [-n] [-e snapshot] filesystem dest
+    usage = """Usage: %prog [-hcnv] [-e snapshot] filesystem dest
 
   Replicate filesystem to dest using zfs send and receive commands.
   filesystem should be a ZFS dataset and dest should be of the form:
