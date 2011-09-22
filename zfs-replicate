@@ -228,8 +228,9 @@ def main():
     parser = OptionParser(usage=usage)
     parser.add_option('-c', '--cron', dest='cron',
                       action="store_true", default=False,
-                      help="suppress errors that are normal when running "
-                      "via cron")
+                      help="use when running via cron: suppress -v "
+                           "output when no work is to be done and do "
+                           "not complain about lockfile presence")
     parser.add_option('-e', '--end', dest='end',
                       help="use specified snapshot as the replication target, "
                       "rather than choosing the newest snapshot available")
@@ -237,10 +238,6 @@ def main():
                       action="store_true", default=False,
                       help="show steps without running actual commands, "
                       "implies --verbose")
-    parser.add_option('-s', '--summary', dest='summary',
-                      action="store_true", default=False,
-                      help="print replication summary, useful for testing "
-                      "with cron")
     parser.add_option('-v', '--verbose', dest='verbose', action="store_true",
                       default=False, help="be verbose about progress")
     options, args = parser.parse_args()
@@ -317,7 +314,7 @@ def main():
     # Are snapshots the same on both sides?
     if begin_snap and \
            end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-        if options.verbose:
+        if options.verbose and not options.cron:
             sys.stdout.write('Remote snapshot is up-to-date, no work to do\n')
             sys.stdout.flush()
         sys.exit(0)
@@ -325,7 +322,7 @@ def main():
     try:
         with zfs_recv_lockfile(remhost, remfs):
             # Print out validated parameters
-            if options.verbose or options.summary:
+            if options.verbose:
                 sys.stdout.write('''
 Replication parameters validated
 Local snapshot %s %s
@@ -353,12 +350,12 @@ DRY RUN - Replication commands will not be run
                 # first snapshot and then do a regular incremental
                 # outside of the if statement.
                 replicate(None, staging_snap, remhost, remfs,
-                          options.verbose or options.summary, options.dryrun)
+                          options.verbose, options.dryrun)
                 begin_snap = staging_snap
             replicate(begin_snap, end_snap, remhost, remfs,
-                      options.verbose or options.summary, options.dryrun)
+                      options.verbose, options.dryrun)
 
-            if options.verbose or options.summary:
+            if options.verbose:
                 sys.stdout.write('Replication complete\n')
                 sys.stdout.flush()
 
