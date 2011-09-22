@@ -321,9 +321,11 @@ def main():
             sys.stdout.flush()
         sys.exit(0)
 
-    # Print out validated parameters
-    if options.verbose or options.summary:
-        sys.stdout.write('''
+    try:
+        with zfs_recv_lockfile(remhost, remfs):
+            # Print out validated parameters
+            if options.verbose or options.summary:
+                sys.stdout.write('''
 Replication parameters validated
 Local snapshot %s %s
 Remote dataset, host:        %s on %s
@@ -332,18 +334,16 @@ Remote starting dataset:     %s
 
 Starting replication...
 ''' % (local_text, end_snap.name, remfs, remhost, repl_text, rem_text))
-        sys.stdout.flush()
-        
-    if options.dryrun:
-        sys.stdout.write('''
+                sys.stdout.flush()
+
+            if options.dryrun:
+                sys.stdout.write('''
 ==============================================
 DRY RUN - Replication commands will not be run
 ==============================================
 ''')
-        sys.stdout.flush()
+                sys.stdout.flush()
 
-    try:
-        with zfs_recv_lockfile(remhost, remfs):
             if not begin_snap:
                 # Perform a staging replication if necessary.  This is
                 # only necessary when doing a full replication, since
@@ -362,10 +362,10 @@ DRY RUN - Replication commands will not be run
                 sys.stdout.flush()
 
     except LockfileExists:
-        if not options.cron:
-            sys.stderr.write("Lock file exists, receive already in progress\n")
-            sys.stderr.flush()
+        if options.cron:
             sys.exit(0)
+        sys.stderr.write("Lock file exists, receive already in progress\n")
+        sys.stderr.flush()
         sys.exit(1)
 
 
