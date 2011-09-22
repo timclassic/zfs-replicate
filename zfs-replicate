@@ -27,12 +27,10 @@ class Zfs(object):
         cmd = '%s zfs list -t %s -r -Ho name,creation %s' % (
             cmd_prefix, dset_type, cmd_postfix)
         stdout, stderr = cls._run_cmd(cmd)
-        lines = stdout.strip().splitlines()
+        lines = [line for line in stdout.splitlines() if line.strip()]
         results = []
         filter_re = re.compile(filter)
         for line in lines:
-            if line.strip() == "":
-                continue
             cols = line.split('\t')
             name = cols[0]
             cdate = datetime.strptime(cols[1], '%a %b %d %H:%M %Y')
@@ -47,7 +45,7 @@ class Zfs(object):
         p = subprocess.Popen(args_list, stdin=None,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = p.communicate()
-        if p.returncode != 0:
+        if p.returncode:
             raise NonZeroExitStatus(stderr.strip())
         return (stdout, stderr)
 
