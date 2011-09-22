@@ -54,9 +54,7 @@ class Zfs(object):
     def pools(cls):
         """Return a list of ZFS pools."""
         stdout, stderr = cls._run_cmd('zpool list -Ho name')
-        stdout_lines = stdout.strip().splitlines()
-        def f(x): return Zpool(x)
-        return map(f, stdout_lines)
+        return [Zpool(l) for l in stdout.strip().splitlines()]
 
     @classmethod
     def datasets(cls, filter=".*", cmd_prefix=""):
