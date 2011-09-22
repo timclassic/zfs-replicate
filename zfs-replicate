@@ -124,7 +124,8 @@ class Dataset(object):
             dsets = Zfs._datasets('all', '^%s$' % (name), cmd_prefix)
             if not dsets:
                 raise NoSuchDatasetError
-            assert(len(dsets) == 1)
+            if len(dsets) > 1:
+                raise Exception("Unexpected logic bug")
 
     @property
     def name(self):
