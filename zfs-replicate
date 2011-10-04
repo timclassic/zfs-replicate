@@ -9,6 +9,7 @@ import subprocess
 import signal
 import re
 import textwrap
+import select
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -17,6 +18,7 @@ class NonZeroExitStatus(Exception): pass
 class InvalidDestinationError(Exception): pass
 class NoSuchDatasetError(Exception): pass
 class LockfileExists(Exception): pass
+class SendNoSuchDataset(Exception): pass
 
 
 class Zfs(object):
@@ -176,8 +178,8 @@ def split_dest(dest):
     return m.group(1), m.group(2)
 
 
-def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
-              dryrun=False):
+def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
+             dryrun=False):
     """Perform replication to dst_host into dst_fs.
 
     If begin_snap is None, perform a full replication, otherwise,
@@ -185,26 +187,202 @@ def replicate(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
     end_snap."""
 
     send_args = ''
-    recv_args = ''
-    if verbose:
-        send_args = send_args + ' -v'
-        recv_args = recv_args + ' -v'
     if begin_snap:
         send_args = send_args + ' -I @%s' % (begin_snap.name.split('@')[1])
-    cmd = 'zfs send%s %s | ssh %s zfs receive%s -F %s' \
-          % (send_args, end_snap.name, dst_host, recv_args, dst_fs)
+    send_cmd = 'zfs send -v%s %s' % (send_args, end_snap.name)
+    recv_cmd = 'ssh %s zfs receive -v -F %s' % (dst_host, dst_fs)
+    send_list = shlex.split(send_cmd)
+    recv_list = shlex.split(recv_cmd)
 
     if verbose:
         if dryrun:
-            sys.stdout.write('[DRY RUN] Not running command: %s\n' % (cmd))
+            sys.stdout.write('[DRY RUN] Not running command: %s | %s\n' %
+                             (send_cmd, recv_cmd))
         else:
-            sys.stdout.write('Running command: %s\n' % (cmd))
+            sys.stdout.write('Running command: %s | %s\n' %
+                             (send_cmd, recv_cmd))
         sys.stdout.flush()
 
     if not dryrun:
-        p = subprocess.Popen(cmd, stdin=None, shell=True,
-                             stdout=sys.stdout, stderr=sys.stderr)
-        p.communicate()
+        send_p = subprocess.Popen(send_list,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        recv_p = subprocess.Popen(recv_list,
+                                  stdin=send_p.stdout,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        send_p.stdout.close() # Ensures EPIPE is properly sent to send_p
+
+        no_such_dset = ''
+        no_such_dset_RE = "^warning: cannot send '(.*)': no such pool or dataset$"
+
+        send_err_EOF = False
+        recv_out_EOF = False
+        recv_err_EOF = False
+        while True:
+            rready, wready, xready = select.select(
+                [send_p.stderr, recv_p.stdout, recv_p.stderr], [], [])
+            buf = ''
+            for fd in rready:
+                buf = fd.readline()
+                if fd is send_p.stderr:
+                    if buf:
+                        if verbose:
+                            sys.stdout.write('SEND (stderr): %s' % (buf))
+                        dset = re.search(no_such_dset_RE, buf)
+                        if dset:
+                            no_such_dset = dset.group(1)
+                    else:
+                        send_err_EOF = True
+
+                elif fd is recv_p.stdout:
+                    if buf:
+                        if verbose:
+                            sys.stdout.write('RECV (stdout): %s' % (buf))
+                    else:
+                        recv_out_EOF = True
+
+                elif fd is recv_p.stderr:
+                    if buf:
+                        if verbose:
+                            sys.stdout.write('RECV (stderr): %s' % (buf))
+                    else:
+                        recv_err_EOF = True
+
+            if send_err_EOF and recv_out_EOF and recv_err_EOF:
+                break
+
+        send_retcode = send_p.wait()
+        recv_retcode = recv_p.wait()
+
+        if no_such_dset:
+            raise SendNoSuchDataset(no_such_dset)
+
+        if send_retcode or recv_retcode:
+            raise NonZeroExitStatus()
+
+        return
+
+
+def replicate(fs, remhost, remfs, options):
+    # Validate source dataset
+    try:
+        fs_dset = Dataset(fs)
+    except NoSuchDatasetError:
+        print('ERROR: No such dataset: %s' % (fs), file=sys.stderr)
+        sys.exit(1)
+    if len(fs_dset.snapshots) == 0:
+        print('ERROR: No snapshots for dataset: %s' % (fs), file=sys.stderr)
+        sys.exit(1)
+
+    if options.end:
+        try:
+            end_snap = Dataset('%s@%s' % (fs, options.end))
+        except NoSuchDatasetError:
+            print('ERROR: No such dataset: %s@%s' % (fs, options.end),
+                  file=sys.stderr)
+            sys.exit(1)
+        local_text = '(specified): '
+    else:
+        local_snaps = sorted(fs_dset.snapshots,
+                             key=lambda snap: snap.attrs['create'])
+        end_snap = local_snaps[-1]
+        staging_snap = local_snaps[0]
+        local_text = '(newest):    '
+
+
+    # Validate destination filesystem
+    remfs_dset = None
+    try:
+        remfs_dset = Dataset(remfs, 'ssh %s' % (remhost))
+    except NoSuchDatasetError:
+        try:
+            rslash = remfs.rfind('/')
+            if rslash < 0:
+                raise NoSuchDatasetError
+            Dataset(remfs[:rslash], 'ssh %s' % (remhost))
+        except NoSuchDatasetError:
+            print('ERROR: Remote dataset or parent does not exist: %s'
+                  % (remfs), file=sys.stderr)
+            sys.exit(1)
+    except NonZeroExitStatus, e:
+        print('ERROR: Error running ZFS command: %s' % (e), file=sys.stderr)
+        sys.exit(1)
+    
+    # Ensure that newest remote snapshot (if any exist) is contained
+    # in local list
+    begin_snap = None
+    rem_text = remfs
+    repl_text = 'Full replication, no snapshots on remote host'
+    if remfs_dset and len(remfs_dset.snapshots) > 0:
+        rem_snaps = sorted(remfs_dset.snapshots,
+                           key=lambda snap: snap.attrs['create'])
+        begin_snap = rem_snaps[-1]
+        rem_text = begin_snap.name
+        repl_text = 'Incremental update since last replication'
+
+        matches = [snap for snap in fs_dset.snapshots
+                   if snap.name.split('@')[1] == begin_snap.name.split('@')[1]]
+        if len(matches) == 0:
+            print('ERROR: Newest remote snapshot does not exist locally',
+                  file=sys.stderr)
+            sys.exit(1)
+
+    # Are snapshots the same on both sides?
+    if begin_snap and \
+           end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+        if options.verbose and not options.cron:
+            sys.stdout.write('Remote snapshot is up-to-date, no work to do\n')
+            sys.stdout.flush()
+        sys.exit(0)
+
+    try:
+        with zfs_recv_lockfile(remhost, remfs):
+            # Print out validated parameters
+            if options.verbose:
+                print(textwrap.dedent('''\
+                Replication parameters validated
+                Local snapshot %s %s
+                Remote dataset, host:        %s on %s
+                Replication type:            %s
+                Remote starting dataset:     %s
+
+                Starting replication...\
+                ''' % (local_text, end_snap.name, remfs, remhost,
+                       repl_text, rem_text)))
+                sys.stdout.flush()
+
+            if options.dryrun:
+                print(textwrap.dedent('''\
+                ==============================================
+                DRY RUN - Replication commands will not be run
+                ==============================================
+                '''))
+                sys.stdout.flush()
+
+            if not begin_snap:
+                # Perform a staging replication if necessary.  This is
+                # only necessary when doing a full replication, since
+                # we don't get -I's behavior of sending all
+                # intermediate snapshots.  Here we "stage" to the
+                # first snapshot and then do a regular incremental
+                # outside of the if statement.
+                run_repl(None, staging_snap, remhost, remfs,
+                          options.verbose, options.dryrun)
+                begin_snap = staging_snap
+
+            run_repl(begin_snap, end_snap, remhost, remfs,
+                      options.verbose, options.dryrun)
+
+            if options.verbose:
+                sys.stdout.write('Replication complete\n')
+                sys.stdout.flush()
+
+    except LockfileExists:
+        if options.cron:
+            sys.exit(0)
+        sys.stderr.write("Lock file exists, receive already in progress\n")
+        sys.exit(1)
 
 
 def main():
@@ -260,120 +438,27 @@ def main():
     
     fs = args[0]
     try:
-        fs_dset = Dataset(fs)
-    except NoSuchDatasetError:
-        parser.error('No such dataset: %s' % (fs))
-
-    try:
         remhost, remfs = split_dest(args[1])
     except InvalidDestinationError:
         parser.error("Invalid dest specification")
 
-    if len(fs_dset.snapshots) == 0:
-        parser.error('No snapshots for dataset: %s' % (fs))
-
-    # Validate source snapshot
-    if options.end:
+    done = False
+    while not done:
         try:
-            end_snap = Dataset('%s@%s' % (fs, options.end))
-        except NoSuchDatasetError:
-            parser.error('No such dataset: %s@%s' % (fs, options.end))
-        local_text = '(specified): '
-    else:
-        local_snaps = sorted(fs_dset.snapshots,
-                             key=lambda snap: snap.attrs['create'])
-        end_snap = local_snaps[-1]
-        staging_snap = local_snaps[0]
-        local_text = '(newest):    '
-
-    # Validate destination filesystem
-    remfs_dset = None
-    try:
-        remfs_dset = Dataset(remfs, 'ssh %s' % remhost)
-    except NoSuchDatasetError:
-        try:
-            rslash = remfs.rfind('/')
-            if rslash < 0:
-                raise NoSuchDatasetError
-            Dataset(remfs[:rslash], 'ssh %s' % remhost)
-        except NoSuchDatasetError:
-            parser.error('Remote dataset or parent does not exist: %s'
-                         % remfs)
-    except NonZeroExitStatus, e:
-        parser.error('Error running ZFS command: %s' % (e))
-    
-    # Ensure that newest remote snapshot (if any exist) is contained
-    # in local list
-    begin_snap = None
-    rem_text = remfs
-    repl_text = 'Full replication, no snapshots on remote host'
-    if remfs_dset and len(remfs_dset.snapshots) > 0:
-        rem_snaps = sorted(remfs_dset.snapshots,
-                           key=lambda snap: snap.attrs['create'])
-        begin_snap = rem_snaps[-1]
-        rem_text = begin_snap.name
-        repl_text = 'Incremental update since last replication'
-
-        matches = [snap for snap in fs_dset.snapshots
-                   if snap.name.split('@')[1] == begin_snap.name.split('@')[1]]
-        if len(matches) == 0:
-            parser.error('Newest remote snapshot does not exist locally')
-
-    # Are snapshots the same on both sides?
-    if begin_snap and \
-           end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-        if options.verbose and not options.cron:
-            sys.stdout.write('Remote snapshot is up-to-date, no work to do\n')
-            sys.stdout.flush()
-        sys.exit(0)
-
-    try:
-        with zfs_recv_lockfile(remhost, remfs):
-            # Print out validated parameters
-            if options.verbose:
-                print(textwrap.dedent('''\
-                Replication parameters validated
-                Local snapshot %s %s
-                Remote dataset, host:        %s on %s
-                Replication type:            %s
-                Remote starting dataset:     %s
-
-                Starting replication...
-                ''' % (local_text, end_snap.name, remfs, remhost,
-                       repl_text, rem_text)))
-                sys.stdout.flush()
-
-            if options.dryrun:
-                print(textwrap.dedent('''\
-                ==============================================
-                DRY RUN - Replication commands will not be run
-                ==============================================
-                '''))
-                sys.stdout.flush()
-
-            if not begin_snap:
-                # Perform a staging replication if necessary.  This is
-                # only necessary when doing a full replication, since
-                # we don't get -I's behavior of sending all
-                # intermediate snapshots.  Here we "stage" to the
-                # first snapshot and then do a regular incremental
-                # outside of the if statement.
-                replicate(None, staging_snap, remhost, remfs,
-                          options.verbose, options.dryrun)
-                begin_snap = staging_snap
-            replicate(begin_snap, end_snap, remhost, remfs,
-                      options.verbose, options.dryrun)
-
-            if options.verbose:
-                sys.stdout.write('Replication complete\n')
-                sys.stdout.flush()
-
-    except LockfileExists:
-        if options.cron:
-            sys.exit(0)
-        sys.stderr.write("Lock file exists, receive already in progress\n")
-        sys.stderr.flush()
-        sys.exit(1)
+            replicate(fs, remhost, remfs, options)
+            done = True
+        except SendNoSuchDataset, e:
+            sys.stderr.write('\n')
+            print(textwrap.fill(textwrap.dedent("""\
+            WARNING: Source snapshot disappeared during replication
+            run.  `zfs send -R ...' creates a list of snapshots to
+            send when the command is started and will fail
+            mid-transfer if a snapshot disappears.  This happens often
+            with hourly snapshots dropping off then end of the
+            scheduled snapshot rotation.  Replication will be
+            restarted--you can probably ignore this warning.
+            """), 78), file=sys.stderr)
+            sys.stderr.write('\n')
 
 
 def sig_handler(sig, frame):
@@ -387,7 +472,6 @@ def sig_handler(sig, frame):
     have to be transferred again.  You should be able to restart later
     where you left off.
     '''), 78), file=sys.stderr)
-    sys.stderr.flush()
     sys.exit(1)
 
 
