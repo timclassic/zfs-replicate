@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 
+from __future__ import print_function
+
 import os
 import sys
 import shlex
 import subprocess
 import signal
 import re
+import textwrap
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -216,15 +219,20 @@ def main():
         signal.signal(sig, sig_handler)
 
     from optparse import OptionParser
-    usage = """Usage: %prog [-hcnv] [-e snapshot] filesystem dest
-
-  Replicate filesystem to dest using zfs send and receive commands.
-  filesystem should be a ZFS dataset and dest should be of the form:
-
-    remote_host:filesystem
-
-  SSH will be used to connect to remote_host and receive the stream
-  into the given dataset."""
+    usage = textwrap.dedent("""\
+    Usage: %prog [-hcnv] [-e snapshot] filesystem dest
+    """)
+    usage += '\n'
+    usage += textwrap.fill(textwrap.dedent("""\
+    Replicate filesystem to dest using zfs send and receive commands.
+    `filesystem' should be a ZFS dataset and dest should be of the
+    form:
+    """), 78)
+    usage += "\n\n   remote_host:filesystem\n\n"
+    usage += textwrap.fill(textwrap.dedent("""\
+    SSH will be used to connect to remote_host and receive the stream
+    into the given dataset.
+    """), 78)
     parser = OptionParser(usage=usage)
     parser.add_option('-c', '--cron', dest='cron',
                       action="store_true", default=False,
@@ -323,23 +331,24 @@ def main():
         with zfs_recv_lockfile(remhost, remfs):
             # Print out validated parameters
             if options.verbose:
-                sys.stdout.write('''
-Replication parameters validated
-Local snapshot %s %s
-Remote dataset, host:        %s on %s
-Replication type:            %s
-Remote starting dataset:     %s
+                print(textwrap.dedent('''\
+                Replication parameters validated
+                Local snapshot %s %s
+                Remote dataset, host:        %s on %s
+                Replication type:            %s
+                Remote starting dataset:     %s
 
-Starting replication...
-''' % (local_text, end_snap.name, remfs, remhost, repl_text, rem_text))
+                Starting replication...
+                ''' % (local_text, end_snap.name, remfs, remhost,
+                       repl_text, rem_text)))
                 sys.stdout.flush()
 
             if options.dryrun:
-                sys.stdout.write('''
-==============================================
-DRY RUN - Replication commands will not be run
-==============================================
-''')
+                print(textwrap.dedent('''\
+                ==============================================
+                DRY RUN - Replication commands will not be run
+                ==============================================
+                '''))
                 sys.stdout.flush()
 
             if not begin_snap:
@@ -372,12 +381,12 @@ def sig_handler(sig, frame):
     # since it will come back to us
     signal.signal(sig, signal.SIG_IGN)
     os.killpg(os.getpgid(0), sig)
-    sys.stderr.write('''
-Replication aborted.  Snapshots that have already transferred will
-remain on the destination host; only the in-progress snapshot will
-have to be transferred again.  You should be able to restart later
-where you left off.
-''')
+    print(textwrap.fill(textwrap.dedent('''\
+    Replication aborted.  Snapshots that have already transferred will
+    remain on the destination host; only the in-progress snapshot will
+    have to be transferred again.  You should be able to restart later
+    where you left off.
+    '''), 78), file=sys.stderr)
     sys.stderr.flush()
     sys.exit(1)
 
