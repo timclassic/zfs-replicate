@@ -196,11 +196,10 @@ def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
 
     if verbose:
         if dryrun:
-            sys.stdout.write('[DRY RUN] Not running command: %s | %s\n' %
-                             (send_cmd, recv_cmd))
+            print('[DRY RUN] Not running command: %s | %s' %
+                  (send_cmd, recv_cmd))
         else:
-            sys.stdout.write('Running command: %s | %s\n' %
-                             (send_cmd, recv_cmd))
+            print('Running command: %s | %s' % (send_cmd, recv_cmd))
         sys.stdout.flush()
 
     if not dryrun:
@@ -332,7 +331,7 @@ def replicate(fs, remhost, remfs, options):
     if begin_snap and \
            end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
         if options.verbose and not options.cron:
-            sys.stdout.write('Remote snapshot is up-to-date, no work to do\n')
+            print('Remote snapshot is up-to-date, no work to do')
             sys.stdout.flush()
         sys.exit(0)
 
@@ -375,13 +374,13 @@ def replicate(fs, remhost, remfs, options):
                       options.verbose, options.dryrun)
 
             if options.verbose:
-                sys.stdout.write('Replication complete\n')
+                print('Replication complete')
                 sys.stdout.flush()
 
     except LockfileExists:
         if options.cron:
             sys.exit(0)
-        sys.stderr.write("Lock file exists, receive already in progress\n")
+        print("Lock file exists, receive already in progress", file=sys.stderr)
         sys.exit(1)
 
 
@@ -450,14 +449,14 @@ def main():
         except SendNoSuchDataset, e:
             sys.stderr.write('\n')
             print(textwrap.fill(textwrap.dedent("""\
-            WARNING: Source snapshot disappeared during replication
-            run.  `zfs send -R ...' creates a list of snapshots to
-            send when the command is started and will fail
-            mid-transfer if a snapshot disappears.  This happens often
-            with hourly snapshots dropping off then end of the
+            WARNING: Source snapshot (%s) disappeared during
+            replication run.  `zfs send -R ...' creates a list of
+            snapshots to send when the command is started and will
+            fail mid-transfer if a snapshot disappears.  This happens
+            often with hourly snapshots dropping off then end of the
             scheduled snapshot rotation.  Replication will be
             restarted--you can probably ignore this warning.
-            """), 78), file=sys.stderr)
+            """ % (e)), 78), file=sys.stderr)
             sys.stderr.write('\n')
 
 
