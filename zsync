@@ -30,7 +30,7 @@ class Zfs(object):
     @classmethod
     def _datasets(cls, dset_type, filter, cmd_prefix="", cmd_postfix=""):
         """Internal implementation of dataset selection code."""
-        cmd = '%s zfs list -t %s -r -Ho name,creation %s' % (
+        cmd = '%s zfs list -t %s -r -Ho name,creation -s creation %s' % (
             cmd_prefix, dset_type, cmd_postfix)
         stdout, stderr = cls._run_cmd(cmd)
         lines = [line for line in stdout.splitlines() if line.strip()]
@@ -152,6 +152,9 @@ class Dataset(object):
         return Zfs._datasets('snapshot', '%s@.*'
                              % (self.name), self._cmd_prefix)
 
+    def __str__(self):
+        return 'dset:%s  create:%s' % (self.name, self.attrs['create'])
+
 
 @contextmanager
 def zfs_recv_lockfile(remhost, remfs):
@@ -260,7 +263,58 @@ def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
         if send_retcode or recv_retcode:
             raise NonZeroExitStatus()
 
-        return
+    return
+
+
+def rm_remote_dsets(dsetlist, dst_host, verbose=False, dryrun=False):
+    """Remove remote datasets"""
+
+    for dset in dsetlist:
+        cmd = 'ssh %s zfs destroy %s' % (dst_host, dset.name)
+        cmd_list = shlex.split(cmd)
+
+        if verbose:
+            if dryrun:
+                print('[DRY RUN] Not running command: %s' % (cmd))
+            else:
+                print('Running command: %s' % (cmd))
+            sys.stdout.flush()
+
+        if not dryrun:
+            p = subprocess.Popen(cmd_list,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            out_EOF = False
+            err_EOF = False
+            while True:
+                rready, wready, xready = select.select(
+                    [p.stdout, p.stderr], [], [])
+                buf = ''
+                for fd in rready:
+                    buf = fd.readline()
+                    if fd is p.stdout:
+                        if buf:
+                            if verbose:
+                                sys.stdout.write('REMOTE (stdout): %s' % (buf))
+                        else:
+                            out_EOF = True
+
+                    elif fd is p.stderr:
+                        if buf:
+                            if verbose:
+                                sys.stdout.write('REMOTE (stderr): %s' % (buf))
+                        else:
+                            err_EOF = True
+
+                if out_EOF and err_EOF:
+                    break
+
+            retcode = p.wait()
+
+            if retcode:
+                raise NonZeroExitStatus()
+
+    return
 
 
 def replicate(fs, remhost, remfs, options):
@@ -274,6 +328,8 @@ def replicate(fs, remhost, remfs, options):
         print('ERROR: No snapshots for dataset: %s' % (fs), file=sys.stderr)
         sys.exit(1)
 
+    local_snaps = fs_dset.snapshots
+    local_snaps.reverse()
     if options.end:
         try:
             end_snap = Dataset('%s@%s' % (fs, options.end))
@@ -283,10 +339,8 @@ def replicate(fs, remhost, remfs, options):
             sys.exit(1)
         local_text = '(specified): '
     else:
-        local_snaps = sorted(fs_dset.snapshots,
-                             key=lambda snap: snap.attrs['create'])
-        end_snap = local_snaps[-1]
-        staging_snap = local_snaps[0]
+        end_snap = local_snaps[0]
+        staging_snap = local_snaps[-1]
         local_text = '(newest):    '
 
 
@@ -307,25 +361,60 @@ def replicate(fs, remhost, remfs, options):
     except NonZeroExitStatus, e:
         print('ERROR: Error running ZFS command: %s' % (e), file=sys.stderr)
         sys.exit(1)
-    
-    # Ensure that newest remote snapshot (if any exist) is contained
-    # in local list
+
+    # Find the newest remote snapshot that also exists in the local
+    # list
     begin_snap = None
     rem_text = remfs
     repl_text = 'Full replication, no snapshots on remote host'
+    rem_snaps_todel = []
     if remfs_dset and len(remfs_dset.snapshots) > 0:
-        rem_snaps = sorted(remfs_dset.snapshots,
-                           key=lambda snap: snap.attrs['create'])
-        begin_snap = rem_snaps[-1]
+        rem_snaps = remfs_dset.snapshots
+        rem_snaps.reverse()
+        for rsnap in rem_snaps:
+            matches = [lsnap for lsnap in local_snaps
+                       if lsnap.name.split('@')[1] == rsnap.name.split('@')[1]]
+            if matches:
+                begin_snap = matches[0]
+                break
+            rem_snaps_todel.append(rsnap)
+
+        if not begin_snap:
+            print(textwrap.fill(textwrap.dedent('''\
+            ERROR: No common snapshots between local and remote
+            datasets.  You will need to perform a full replication.
+            Please destroy the remote dataset to begin.'''), 78),
+                  file=sys.stderr)
         rem_text = begin_snap.name
         repl_text = 'Incremental update since last replication'
 
-        matches = [snap for snap in fs_dset.snapshots
-                   if snap.name.split('@')[1] == begin_snap.name.split('@')[1]]
-        if len(matches) == 0:
-            print('ERROR: Newest remote snapshot does not exist locally',
-                  file=sys.stderr)
-            sys.exit(1)
+    # Verbose debugging info
+    if options.verbose:
+        if begin_snap:
+            print(textwrap.dedent("""\
+            Snapshots exist on source and dest, showing analysis...
+            === Snapshot Analysis ===
+              `-->' indicates starting snapshot on src and dest
+              `DEL' indicates remote snapshots to be destroyed
+            Local snapshot candidates (newest first):"""))
+            for snap in local_snaps:
+                if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+                    print('--> %s' % (snap))
+                else:
+                    print('    %s' % (snap))
+            print()
+            print('Remote snapshot candidates (newest first)')
+            for snap in rem_snaps:
+                if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+                    print('--> %s' % (snap))
+                elif snap in rem_snaps_todel:
+                    print('DEL %s' % (snap))
+                else:
+                    print('    %s' % (snap))
+            print()
+        else:
+            print('Full replication, no snapshot analysis')
+        sys.stdout.flush()
 
     # Are snapshots the same on both sides?
     if begin_snap and \
@@ -341,12 +430,11 @@ def replicate(fs, remhost, remfs, options):
             if options.verbose:
                 print(textwrap.dedent('''\
                 Replication parameters validated
+                
                 Local snapshot %s %s
                 Remote dataset, host:        %s on %s
                 Replication type:            %s
                 Remote starting dataset:     %s
-
-                Starting replication...\
                 ''' % (local_text, end_snap.name, remfs, remhost,
                        repl_text, rem_text)))
                 sys.stdout.flush()
@@ -357,6 +445,17 @@ def replicate(fs, remhost, remfs, options):
                 DRY RUN - Replication commands will not be run
                 ==============================================
                 '''))
+                sys.stdout.flush()
+
+            if rem_snaps_todel:
+                if options.verbose:
+                    print('Removing remote snapshots...')
+                    sys.stdout.flush()
+                rm_remote_dsets(rem_snaps_todel, remhost, options.verbose,
+                                options.dryrun)
+
+            if options.verbose:
+                print('Starting replication...')
                 sys.stdout.flush()
 
             if not begin_snap:
