@@ -261,8 +261,10 @@ def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
         if no_such_dset:
             raise SendNoSuchDataset(no_such_dset)
 
-        if send_retcode or recv_retcode:
-            raise NonZeroExitStatus()
+        if send_retcode:
+            raise NonZeroExitStatus(send_cmd)
+        if recv_retcode:
+            raise NonZeroExitStatus(recv_cmd)
 
     return
 
@@ -313,7 +315,7 @@ def rm_remote_dsets(dsetlist, dst_host, verbose=False, dryrun=False):
             retcode = p.wait()
 
             if retcode:
-                raise NonZeroExitStatus()
+                raise NonZeroExitStatus(cmd)
 
     return
 
