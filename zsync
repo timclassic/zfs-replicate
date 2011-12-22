@@ -471,8 +471,12 @@ def replicate(fs, remhost, remfs, options):
                           options.verbose, options.dryrun)
                 begin_snap = staging_snap
 
-            run_repl(begin_snap, end_snap, remhost, remfs,
-                      options.verbose, options.dryrun)
+            # If begin_snap and end_snap have the same name, then the
+            # above staging replication got us fully up-to-date, so
+            # skip the follow-up incremental
+            if begin_snap.name.split('@')[1] != end_snap.name.split('@')[1]:
+                run_repl(begin_snap, end_snap, remhost, remfs,
+                         options.verbose, options.dryrun)
 
             end_time = datetime.now()
             if options.verbose:
