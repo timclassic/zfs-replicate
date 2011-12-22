@@ -10,6 +10,7 @@ import signal
 import re
 import textwrap
 import select
+import datetime
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -388,34 +389,6 @@ def replicate(fs, remhost, remfs, options):
         rem_text = begin_snap.name
         repl_text = 'Incremental update since last replication'
 
-    # Verbose debugging info
-    if options.verbose:
-        if begin_snap:
-            print(textwrap.dedent("""\
-            Snapshots exist on source and dest, showing analysis...
-            === Snapshot Analysis ===
-              `-->' indicates starting snapshot on src and dest
-              `DEL' indicates remote snapshots to be destroyed
-            Local snapshot candidates (newest first):"""))
-            for snap in local_snaps:
-                if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-                    print('--> %s' % (snap))
-                else:
-                    print('    %s' % (snap))
-            print()
-            print('Remote snapshot candidates (newest first)')
-            for snap in rem_snaps:
-                if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-                    print('--> %s' % (snap))
-                elif snap in rem_snaps_todel:
-                    print('DEL %s' % (snap))
-                else:
-                    print('    %s' % (snap))
-            print()
-        else:
-            print('Full replication, no snapshot analysis')
-        sys.stdout.flush()
-
     # Are snapshots the same on both sides?
     if begin_snap and \
            end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
@@ -437,8 +410,33 @@ def replicate(fs, remhost, remfs, options):
                 Remote starting dataset:     %s
                 ''' % (local_text, end_snap.name, remfs, remhost,
                        repl_text, rem_text)))
-                sys.stdout.flush()
 
+                # Snapshot analysis
+                if begin_snap:
+                    print(textwrap.dedent("""\
+                    Snapshots exist on source and dest, showing analysis...
+                    === Snapshot Analysis ===
+                      `-->' indicates starting snapshot on src and dest
+                      `DEL' indicates remote snapshots to be destroyed
+                    Local snapshot candidates (newest first):"""))
+                    for snap in local_snaps:
+                        if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+                            print('--> %s' % (snap))
+                        else:
+                            print('    %s' % (snap))
+                    print()
+                    print('Remote snapshot candidates (newest first)')
+                    for snap in rem_snaps:
+                        if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+                            print('--> %s' % (snap))
+                        elif snap in rem_snaps_todel:
+                            print('DEL %s' % (snap))
+                        else:
+                            print('    %s' % (snap))
+                    print()
+
+                sys.stdout.flush()
+ 
             if options.dryrun:
                 print(textwrap.dedent('''\
                 ==============================================
@@ -454,8 +452,10 @@ def replicate(fs, remhost, remfs, options):
                 rm_remote_dsets(rem_snaps_todel, remhost, options.verbose,
                                 options.dryrun)
 
+            start_time = datetime.now()
             if options.verbose:
-                print('Starting replication...')
+                print('=== Starting replication at %s'
+                      % start_time.strftime('%c'))
                 sys.stdout.flush()
 
             if not begin_snap:
@@ -472,8 +472,10 @@ def replicate(fs, remhost, remfs, options):
             run_repl(begin_snap, end_snap, remhost, remfs,
                       options.verbose, options.dryrun)
 
+            end_time = datetime.now()
             if options.verbose:
-                print('Replication complete')
+                print('=== Replication complete at %s'
+                      % end_time.strftime('%c'))
                 sys.stdout.flush()
 
     except LockfileExists:
