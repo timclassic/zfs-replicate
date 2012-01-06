@@ -388,6 +388,7 @@ def replicate(fs, remhost, remfs, options):
             datasets.  You will need to perform a full replication.
             Please destroy the remote dataset to begin.'''), 78),
                   file=sys.stderr)
+            sys.exit(1)
         rem_text = begin_snap.name
         repl_text = 'Incremental update since last replication'
 
