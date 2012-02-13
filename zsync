@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import os
 import sys
+import syslog
 import shlex
 import subprocess
 import signal
@@ -175,6 +176,21 @@ def zfs_recv_lockfile(remhost, remfs):
             os.unlink(lockfile)
 
 
+def log(msg, log=True, stdout=False, stderr=False):
+    for line in msg.split('\n'):
+        if stdout:
+            print(line)
+            sys.stdout.flush()
+        if stderr:
+            print('ERROR:  %s' % line, file=sys.stderr)
+            sys.stderr.flush()
+        if log:
+            if stderr:
+                syslog.syslog('ERROR:  %s' % line)
+            else:
+                syslog.syslog('INFO:   %s' % line)
+
+
 def split_dest(dest):
     m = re.match('^([^:]+):([^:]+)$', dest)
     if not m:
@@ -198,13 +214,11 @@ def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
     send_list = shlex.split(send_cmd)
     recv_list = shlex.split(recv_cmd)
 
-    if verbose:
-        if dryrun:
-            print('[DRY RUN] Not running command: %s | %s' %
-                  (send_cmd, recv_cmd))
-        else:
-            print('Running command: %s | %s' % (send_cmd, recv_cmd))
-        sys.stdout.flush()
+    if dryrun:
+        log('[DRY RUN] Not running command: %s | %s' %
+            (send_cmd, recv_cmd), stdout=True)
+    else:
+        log('Running command: %s | %s' % (send_cmd, recv_cmd), stdout=verbose)
 
     if not dryrun:
         send_p = subprocess.Popen(send_list,
@@ -276,12 +290,10 @@ def rm_remote_dsets(dsetlist, dst_host, verbose=False, dryrun=False):
         cmd = 'ssh %s zfs destroy %s' % (dst_host, dset.name)
         cmd_list = shlex.split(cmd)
 
-        if verbose:
-            if dryrun:
-                print('[DRY RUN] Not running command: %s' % (cmd))
-            else:
-                print('Running command: %s' % (cmd))
-            sys.stdout.flush()
+        if dryrun:
+            log('[DRY RUN] Not running command: %s' % (cmd), stdout=True)
+        else:
+            log('Running command: %s' % (cmd), stdout=verbose)
 
         if not dryrun:
             p = subprocess.Popen(cmd_list,
@@ -325,10 +337,10 @@ def replicate(fs, remhost, remfs, options):
     try:
         fs_dset = Dataset(fs)
     except NoSuchDatasetError:
-        print('ERROR: No such dataset: %s' % (fs), file=sys.stderr)
+        log('No such local dataset: %s' % (fs), stderr=True)
         sys.exit(1)
     if len(fs_dset.snapshots) == 0:
-        print('ERROR: No snapshots for dataset: %s' % (fs), file=sys.stderr)
+        log('No snapshots for local dataset: %s' % (fs), stderr=True)
         sys.exit(1)
 
     local_snaps = fs_dset.snapshots
@@ -337,8 +349,8 @@ def replicate(fs, remhost, remfs, options):
         try:
             end_snap = Dataset('%s@%s' % (fs, options.end))
         except NoSuchDatasetError:
-            print('ERROR: No such dataset: %s@%s' % (fs, options.end),
-                  file=sys.stderr)
+            log('No such remote dataset: %s@%s' % (fs, options.end),
+                stderr=True)
             sys.exit(1)
         local_text = '(specified): '
     else:
@@ -358,11 +370,11 @@ def replicate(fs, remhost, remfs, options):
                 raise NoSuchDatasetError
             Dataset(remfs[:rslash], 'ssh %s' % (remhost))
         except NoSuchDatasetError:
-            print('ERROR: Remote dataset or parent does not exist: %s'
-                  % (remfs), file=sys.stderr)
+            log('Remote dataset or parent does not exist: %s' % (remfs),
+                stderr=True)
             sys.exit(1)
     except NonZeroExitStatus, e:
-        print('ERROR: Error running ZFS command: %s' % (e), file=sys.stderr)
+        log('Error running ZFS command: %s' % (e), stderr=True)
         sys.exit(1)
 
     # Find the newest remote snapshot that also exists in the local
@@ -383,11 +395,10 @@ def replicate(fs, remhost, remfs, options):
             rem_snaps_todel.append(rsnap)
 
         if not begin_snap:
-            print(textwrap.fill(textwrap.dedent('''\
-            ERROR: No common snapshots between local and remote
-            datasets.  You will need to perform a full replication.
-            Please destroy the remote dataset to begin.'''), 78),
-                  file=sys.stderr)
+            log(textwrap.fill(textwrap.dedent('''\
+            No common snapshots between local and remote datasets.
+            You will need to perform a full replication.  Please
+            destroy the remote dataset to begin.'''), 70), stderr=True)
             sys.exit(1)
         rem_text = begin_snap.name
         repl_text = 'Incremental update since last replication'
@@ -395,71 +406,62 @@ def replicate(fs, remhost, remfs, options):
     # Are snapshots the same on both sides?
     if begin_snap and \
            end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-        if options.verbose and not options.cron:
-            print('Remote snapshot is up-to-date, no work to do')
-            sys.stdout.flush()
+        log('Remote snapshot %s is up-to-date, no work to do' %
+            end_snap.name, stdout=(not options.cron))
         sys.exit(0)
 
     try:
         with zfs_recv_lockfile(remhost, remfs):
             # Print out validated parameters
-            if options.verbose:
-                print(textwrap.dedent('''\
-                Replication parameters validated
-                
-                Local snapshot %s %s
-                Remote dataset, host:        %s on %s
-                Replication type:            %s
-                Remote starting dataset:     %s
-                ''' % (local_text, end_snap.name, remfs, remhost,
-                       repl_text, rem_text)))
+            log(textwrap.dedent('''\
+            === Replication parameters validated ===
+            Local snapshot %s %s
+            Remote dataset, host:        %s on %s
+            Replication type:            %s
+            Remote starting dataset:     %s\
+            ''' % (local_text, end_snap.name, remfs, remhost,
+                   repl_text, rem_text)), stdout=options.verbose)
 
-                # Snapshot analysis
-                if begin_snap:
-                    print(textwrap.dedent("""\
-                    Snapshots exist on source and dest, showing analysis...
-                    === Snapshot Analysis ===
-                      `-->' indicates starting snapshot on src and dest
-                      `DEL' indicates remote snapshots to be destroyed
-                    Local snapshot candidates (newest first):"""))
-                    for snap in local_snaps:
-                        if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-                            print('--> %s' % (snap))
-                        else:
-                            print('    %s' % (snap))
-                    print()
-                    print('Remote snapshot candidates (newest first)')
-                    for snap in rem_snaps:
-                        if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-                            print('--> %s' % (snap))
-                        elif snap in rem_snaps_todel:
-                            print('DEL %s' % (snap))
-                        else:
-                            print('    %s' % (snap))
-                    print()
+            # Snapshot analysis
+            if begin_snap:
+                log(textwrap.dedent("""\
+                === Incremental Snapshot Analysis ===
+                  `-->' indicates starting snapshot on src and dest
+                  `DEL' indicates remote snapshots to be destroyed
+                Local snapshot candidates (newest first):"""),
+                    stdout=options.verbose)
+                for snap in local_snaps:
+                    if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+                        log('--> %s' % (snap), stdout=options.verbose)
+                        break
+                    else:
+                        log('    %s' % (snap), stdout=options.verbose)
+                log('Remote snapshot candidates (newest first)',
+                    stdout=options.verbose)
+                for snap in rem_snaps:
+                    if snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
+                        log('--> %s' % (snap), stdout=options.verbose)
+                        break
+                    elif snap in rem_snaps_todel:
+                        log('DEL %s' % (snap), stdout=options.verbose)
+                    else:
+                        log('    %s' % (snap), stdout=options.verbose)
 
-                sys.stdout.flush()
- 
             if options.dryrun:
-                print(textwrap.dedent('''\
+                log(textwrap.dedent('''\
                 ==============================================
                 DRY RUN - Replication commands will not be run
-                ==============================================
-                '''))
-                sys.stdout.flush()
+                ==============================================\
+                '''), stdout=options.verbose)
 
             if rem_snaps_todel:
-                if options.verbose:
-                    print('Removing remote snapshots...')
-                    sys.stdout.flush()
+                log('Removing remote snapshots...', stdout=options.verbose)
                 rm_remote_dsets(rem_snaps_todel, remhost, options.verbose,
                                 options.dryrun)
 
             start_time = datetime.now()
-            if options.verbose:
-                print('=== Starting replication at %s'
-                      % start_time.strftime('%c'))
-                sys.stdout.flush()
+            log('=== Starting replication at %s'
+                % start_time.strftime('%c'), stdout=options.verbose)
 
             if not begin_snap:
                 # Perform a staging replication if necessary.  This is
@@ -480,15 +482,14 @@ def replicate(fs, remhost, remfs, options):
                          options.verbose, options.dryrun)
 
             end_time = datetime.now()
-            if options.verbose:
-                print('=== Replication complete at %s'
-                      % end_time.strftime('%c'))
-                sys.stdout.flush()
+            log('=== Replication complete at %s'
+                % end_time.strftime('%c'), stdout=options.verbose)
 
     except LockfileExists:
+        log("Lock file exists, receive already in progress",
+            stderr=(not options.cron))
         if options.cron:
             sys.exit(0)
-        print("Lock file exists, receive already in progress", file=sys.stderr)
         sys.exit(1)
 
 
@@ -549,6 +550,10 @@ def main():
     except InvalidDestinationError:
         parser.error("Invalid dest specification")
 
+    # Options look good, set up logging
+    syslog.openlog("zsync", syslog.LOG_PID, syslog.LOG_LOCAL0)
+
+    # Begin replication
     done = False
     while not done:
         try:
@@ -556,7 +561,7 @@ def main():
             done = True
         except SendNoSuchDataset, e:
             sys.stderr.write('\n')
-            print(textwrap.fill(textwrap.dedent("""\
+            log(textwrap.fill(textwrap.dedent("""\
             WARNING: Source snapshot (%s) disappeared during
             replication run.  `zfs send -R ...' creates a list of
             snapshots to send when the command is started and will
@@ -564,8 +569,7 @@ def main():
             often with hourly snapshots dropping off then end of the
             scheduled snapshot rotation.  Replication will be
             restarted--you can probably ignore this warning.
-            """ % (e)), 78), file=sys.stderr)
-            sys.stderr.write('\n')
+            """ % (e)), 70), stdout=options.verbose)
 
 
 def sig_handler(sig, frame):
@@ -573,12 +577,12 @@ def sig_handler(sig, frame):
     # since it will come back to us
     signal.signal(sig, signal.SIG_IGN)
     os.killpg(os.getpgid(0), sig)
-    print(textwrap.fill(textwrap.dedent('''\
+    log(textwrap.fill(textwrap.dedent('''\
     Replication aborted.  Snapshots that have already transferred will
     remain on the destination host; only the in-progress snapshot will
     have to be transferred again.  You should be able to restart later
     where you left off.
-    '''), 78), file=sys.stderr)
+    '''), 70), stderr=True)
     sys.exit(1)
 
 
