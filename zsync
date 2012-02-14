@@ -512,8 +512,8 @@ def replicate(fs, remhost, remfs, options):
                 % (fs, end_time.strftime('%c')), stdout=options.verbose)
 
     except LockfileExists:
-        log("Lock file exists, receive already in progress",
-            stderr=(not options.cron))
+        log("Lock file exists for %s:%s, receive already in progress" %
+            (remhost.split('.')[0], remfs), stderr=(not options.cron))
         if options.cron:
             sys.exit(0)
         sys.exit(1)
