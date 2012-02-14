@@ -437,7 +437,7 @@ def replicate(fs, remhost, remfs, options):
     # Are snapshots the same on both sides?
     if begin_snap and \
            end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
-        log('Remote snapshot %s is up-to-date, no work to do' %
+        log('Remote snapshot of %s is up-to-date, no work to do' %
             end_snap.name, stdout=(not options.cron))
         sys.exit(0)
 
