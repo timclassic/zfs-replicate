@@ -272,11 +272,10 @@ def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
                 [send_p.stderr, recv_p.stdout, recv_p.stderr], [], [])
             buf = ''
             for fd in rready:
-                buf = fd.readline()
+                buf = fd.readline().rstrip()
                 if fd is send_p.stderr:
                     if buf:
-                        if verbose:
-                            sys.stdout.write('SEND (stderr): %s' % (buf))
+                        log('  SEND (stderr): %s' % (buf), stdout=verbose)
                         dset = re.search(no_such_dset_RE, buf)
                         if dset:
                             no_such_dset = dset.group(1)
@@ -285,15 +284,13 @@ def run_repl(begin_snap, end_snap, dst_host, dst_fs, verbose=False,
 
                 elif fd is recv_p.stdout:
                     if buf:
-                        if verbose:
-                            sys.stdout.write('RECV (stdout): %s' % (buf))
+                        log('  RECV (stdout): %s' % (buf), stdout=verbose)
                     else:
                         recv_out_EOF = True
 
                 elif fd is recv_p.stderr:
                     if buf:
-                        if verbose:
-                            sys.stdout.write('RECV (stderr): %s' % (buf))
+                        log('  RECV (stderr): %s' % (buf), stdout=verbose)
                     else:
                         recv_err_EOF = True
 
@@ -337,18 +334,16 @@ def rm_remote_dsets(dsetlist, dst_host, verbose=False, dryrun=False):
                     [p.stdout, p.stderr], [], [])
                 buf = ''
                 for fd in rready:
-                    buf = fd.readline()
+                    buf = fd.readline().rstrip()
                     if fd is p.stdout:
                         if buf:
-                            if verbose:
-                                sys.stdout.write('REMOTE (stdout): %s' % (buf))
+                            log('  REMOTE (stdout): %s' % (buf), stdout=verbose)
                         else:
                             out_EOF = True
 
                     elif fd is p.stderr:
                         if buf:
-                            if verbose:
-                                sys.stdout.write('REMOTE (stderr): %s' % (buf))
+                            log('  REMOTE (stderr): %s' % (buf), stdout=verbose)
                         else:
                             err_EOF = True
 
@@ -591,7 +586,6 @@ def main():
             replicate(fs, remhost, remfs, options)
             done = True
         except SendNoSuchDataset, e:
-            sys.stderr.write('\n')
             log(textwrap.fill(textwrap.dedent("""\
             WARNING: Source snapshot (%s) disappeared during
             replication run.  `zfs send -R ...' creates a list of
