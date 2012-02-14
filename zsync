@@ -429,6 +429,27 @@ def replicate(fs, remhost, remfs, options):
         rem_text = begin_snap.name
         repl_text = 'Incremental update since last replication'
 
+    # Report lag and exit if we're in lag mode
+    if options.truelag or options.snaplag:
+        if begin_snap:
+            if options.truelag:
+                prefix = "truelag: "
+                td = datetime.now() - begin_snap.attrs['create']
+            else:
+                prefix = "snaplag: "
+                td = end_snap.attrs['create'] - begin_snap.attrs['create']
+            minutes = int(td.seconds/60 + td.days*24*60)
+            log("%s%s minutes (dset:%s, rsnap:%s, lsnap:%s)"
+                % (prefix, minutes, fs,
+                   begin_snap.name.split('@')[1],
+                   end_snap.name.split('@')[1]),
+                stdout=True)
+            sys.exit(0)
+        else:
+            log("Dataset not yet replicated, cannot calculate lag",
+                stderr=True)
+            sys.exit(1)
+
     # Are snapshots the same on both sides?
     if begin_snap and \
            end_snap.name.split('@')[1] == begin_snap.name.split('@')[1]:
@@ -532,19 +553,20 @@ def main():
 
     from optparse import OptionParser
     usage = textwrap.dedent("""\
-    Usage: %prog [-hcnv] [-e snapshot] filesystem dest
+    Usage: %prog [-hclLnv] [-e snapshot] filesystem dest
     """)
     usage += '\n'
     usage += textwrap.fill(textwrap.dedent("""\
-    Replicate filesystem to dest using zfs send and receive commands.
-    `filesystem' should be a ZFS dataset and dest should be of the
-    form:
-    """), 78)
+    Replicate filesystem to dest using zfs send and receive commands
+    (unless -l or -L is specified).  `filesystem' should be a ZFS
+    dataset and `dest' should be of the form:
+    """), 76)
     usage += "\n\n   remote_host:filesystem\n\n"
     usage += textwrap.fill(textwrap.dedent("""\
-    SSH will be used to connect to remote_host and receive the stream
-    into the given dataset.
-    """), 78)
+    SSH will be used to connect to `remote_host' and receive the
+    stream into the given dataset.  Activity will be logged to syslog,
+    and to standard output if -v is used.
+    """), 76)
     parser = OptionParser(usage=usage)
     parser.add_option('-c', '--cron', dest='cron',
                       action="store_true", default=False,
@@ -554,12 +576,23 @@ def main():
     parser.add_option('-e', '--end', dest='end',
                       help="use specified snapshot as the replication target, "
                       "rather than choosing the newest snapshot available")
+    parser.add_option('-l', '--truelag', dest='truelag', action="store_true",
+                      help="do not replicate filesystems; instead, report "
+                      "the lag time in minutes between the newest remote "
+                      "snapshot and the current time to standard output.  "
+                      "Useful for monitoring systems")
+    parser.add_option('-L', '--snaplag', dest='snaplag', action="store_true",
+                      help="do not replicate filesystems; instead, report "
+                      "the lag time in minutes between the newest local and "
+                      "remote snapshots to standard output.  Useful "
+                      "for monitoring systems")
     parser.add_option('-n', '--dryrun', dest='dryrun',
                       action="store_true", default=False,
                       help="show steps without running actual commands, "
                       "implies --verbose")
     parser.add_option('-v', '--verbose', dest='verbose', action="store_true",
-                      default=False, help="be verbose about progress")
+                      default=False, help="report progress on standard "
+                      "output as well as syslog")
     options, args = parser.parse_args()
     if not args:
         parser.print_help()
