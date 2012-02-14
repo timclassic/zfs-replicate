@@ -489,8 +489,8 @@ def replicate(fs, remhost, remfs, options):
                                 options.dryrun)
 
             start_time = datetime.now()
-            log('=== Starting replication at %s'
-                % start_time.strftime('%c'), stdout=options.verbose)
+            log('=== Starting replication for %s at %s'
+                % (fs, start_time.strftime('%c')), stdout=options.verbose)
 
             if not begin_snap:
                 # Perform a staging replication if necessary.  This is
@@ -511,8 +511,8 @@ def replicate(fs, remhost, remfs, options):
                          options.verbose, options.dryrun)
 
             end_time = datetime.now()
-            log('=== Replication complete at %s'
-                % end_time.strftime('%c'), stdout=options.verbose)
+            log('=== Replication complete for %s at %s'
+                % (fs, end_time.strftime('%c')), stdout=options.verbose)
 
     except LockfileExists:
         log("Lock file exists, receive already in progress",
